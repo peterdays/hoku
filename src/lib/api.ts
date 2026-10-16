@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { OverseerRefresh } from "../features/overseer/adapters";
 import type {
   DraftProviderStatus,
   HubError,
@@ -129,4 +130,40 @@ export const api = {
   clearDemo: () => call<void>("clear_demo"),
   databasePath: () => call<string>("database_path"),
   hostInfo: () => call<HostInfo>("host_info"),
+
+  overseerConfig: () => call<OverseerPublicConfig>("overseer_config"),
+  overseerSave: (body: OverseerSave) => call<OverseerPublicConfig>("overseer_save", { body }),
+  overseerRefresh: () => call<OverseerRefresh>("overseer_refresh"),
+  overseerOpen: (url: string, kind: string) => call<void>("overseer_open", { url, kind }),
 };
+
+export interface OverseerPublicConfig {
+  demo: boolean;
+  cursorOn: boolean;
+  githubOn: boolean;
+  hermesOn: boolean;
+  grokOn: boolean;
+  cursorConfigured: boolean;
+  githubConfigured: boolean;
+  hermesConfigured: boolean;
+  hermesDashboard: string;
+  hermesApi: string;
+  grokFeed: string;
+}
+
+export interface OverseerSave {
+  demo: boolean;
+  cursorOn: boolean;
+  githubOn: boolean;
+  hermesOn: boolean;
+  grokOn: boolean;
+  hermesDashboard: string;
+  hermesApi: string;
+  grokFeed: string;
+  cursorKey: string;
+  githubToken: string;
+  hermesKey: string;
+  clearCursorKey: boolean;
+  clearGithubToken: boolean;
+  clearHermesKey: boolean;
+}

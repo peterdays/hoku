@@ -1,9 +1,9 @@
-import { openOverlay, showGalaxy, showRecaps, showSessions, toggleList } from "../app/actions";
+import { openOverlay, showGalaxy, showOverseer, showRecaps, showSessions, toggleList } from "../app/actions";
 import { useHub, type ListMode } from "../app/store";
 import { useMinuteClock } from "../app/useClock";
 import { dueCount } from "../features/follow-up/followUp";
 import { needsYou, ATTENTION, STARLIGHT } from "../features/runtime/status";
-import { IconActivity, IconFlag, IconGalaxy, IconInbox, IconList, IconOrbit, IconProjects, IconRecap, IconSettings, IconStar } from "./Icons";
+import { IconActivity, IconFlag, IconGalaxy, IconInbox, IconList, IconOrbit, IconProjects, IconPulse, IconRecap, IconSettings, IconStar } from "./Icons";
 
 /** Amber is reserved for Needs You. Follow up reminders get a quiet starlight badge. */
 const BADGE = { attention: ATTENTION, quiet: STARLIGHT } as const;
@@ -73,6 +73,9 @@ export function Rail() {
   return (
     <nav className="relative z-30 flex w-[56px] shrink-0 flex-col items-center gap-1 border-r border-line bg-ground/80 pt-[46px] pb-3">
       <div data-tauri-drag-region className="absolute inset-x-0 top-0 h-[40px]" />
+      <RailButton label="Now" active={view === "overseer"} onClick={showOverseer}>
+        <IconPulse />
+      </RailButton>
       <RailButton label="Galaxy" active={onGalaxy && !focus && !list} onClick={showGalaxy}>
         <IconGalaxy />
       </RailButton>

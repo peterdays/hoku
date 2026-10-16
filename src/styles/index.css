@@ -361,6 +361,15 @@
   animation: slide-in-left 200ms var(--ease-out-soft) both;
 }
 
+@keyframes hoku-need {
+  0%,
+  100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.hoku-need {
+  animation: hoku-need 2.8s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* State stays clear from colour and shape alone; transitions become a short fade. */
   .ripple {
@@ -375,7 +384,8 @@
   .fade-up,
   .fade-in,
   .slide-in-right,
-  .slide-in-left {
+  .slide-in-left,
+  .hoku-need {
     animation: none;
   }
 }

@@ -5,6 +5,7 @@ mod db;
 mod demo;
 #[cfg(debug_assertions)]
 mod devtools;
+mod fronts;
 mod integrations;
 mod launch;
 mod models;
@@ -96,7 +97,11 @@ pub fn run() {
                 commands::load_demo,
                 commands::clear_demo,
                 commands::database_path,
-                commands::host_info
+                commands::host_info,
+                fronts::overseer_config,
+                fronts::overseer_save,
+                fronts::overseer_refresh,
+                fronts::overseer_open
                 $(, $extra)*
             ]
         };
