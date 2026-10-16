@@ -65,6 +65,11 @@ export function toggleResume(projectId: string) {
   else openResume(projectId);
 }
 
+/** The overseer: what needs you across bots, cloud agents, and GitHub. */
+export function showOverseer() {
+  setState({ view: "overseer", list: null, focus: null, selectedId: null, overlay: null });
+}
+
 /** Go to the Galaxy; if already there, re-frame all systems. */
 export function showGalaxy() {
   const s = getState();

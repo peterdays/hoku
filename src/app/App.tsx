@@ -21,6 +21,7 @@ import { ResumeDrawer } from "../features/resume/ResumeDrawer";
 import { SpacesHelpSheet } from "../features/sessions/SpacesHelpSheet";
 import { ageMs } from "../lib/time";
 import { isSessionVisible, visibilityFromSettings } from "../features/galaxy/visibility";
+import { OverseerView } from "../features/overseer/OverseerView";
 import { setVisibility, showGalaxy, closeOverlay, copy, escape, focusProject, openOverlay, openSession, patchSession, reload, scan, select, startNotificationClicks, startRuntimeUpdates, toast, toggleFollowUp, toggleResume } from "./actions";
 import { UNSORTED, useSession, useSystems, useVisibility } from "./model";
 import { getState, useHub } from "./store";
@@ -70,6 +71,10 @@ export function App() {
     <div className="flex h-full">
       <Rail />
       <main className="relative flex-1 overflow-hidden">
+        {view === "overseer" ? (
+          <OverseerView />
+        ) : (
+        <>
         {loaded && !empty && (
           <Constellation
             systems={systems}
@@ -110,6 +115,8 @@ export function App() {
         {list && list !== "resume" && <ListDrawer mode={list} systems={systems} />}
         {resumeProject && <ResumeDrawer project={resumeProject} />}
         {selected && view !== "recaps" && <Inspector key={selected.id} session={selected} />}
+        </>
+        )}
 
         {overlay?.kind === "palette" && <CommandPalette />}
         {overlay?.kind === "add-session" && <AddSessionSheet projectId={overlay.projectId} />}
@@ -144,6 +151,7 @@ function useGlobalKeys(systemKeys: string[]) {
         if (e.key === "Escape" && !isTyping(e)) escape();
         return;
       }
+      if (s.view === "overseer") return;
       if (mod && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
         void setVisibility({ mode: visibilityFromSettings(s.data.settings).mode === "all" ? "current" : "all" });

@@ -32,6 +32,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 regex = "1"
 libc = "0.2"
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
 
 # `macos-private-api` stays on this target table only. tauri-build's allowlist
 # check reads `[dependencies] tauri` and ignores target-specific features, then

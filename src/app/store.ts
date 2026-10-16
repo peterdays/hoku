@@ -21,7 +21,7 @@ export type Overlay =
  */
 export type ListMode = "needs" | "follow" | "activity" | "favorites" | "projects" | "resume";
 /** Full-area destinations. The Galaxy is home; Sessions is the management list; Recaps summarises a period. */
-export type View = "galaxy" | "sessions" | "recaps";
+export type View = "overseer" | "galaxy" | "sessions" | "recaps";
 export type ActivityRange = "today" | "7d" | "30d";
 
 export interface SessionsSort {
@@ -81,7 +81,7 @@ let state: HubState = {
   selectedId: null,
   overlay: null,
   list: null,
-  view: "galaxy",
+  view: "overseer",
   statusFilter: [],
   sessionsFilter: {},
   sessionsSort: { key: "activity", dir: "desc" },
