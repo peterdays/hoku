@@ -50,3 +50,7 @@ A file is either a JSON array or one JSON object per line. Bad lines are skipped
 `id` matches `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`. `state` is one of `needs-you`, `working`, `blocked`, `done`, `idle`. `needs-you` requires `reason`. `url`, when present, must start with `https://grok.com/` or the jump link is dropped. `detail` is clipped to 160 characters and `name` to 64.
 
 A bot or a small routine writes this file. Hoku does not write it.
+
+## Browser galaxy
+
+On the Linux machine where the Grok bots run, the same constellation is served in a browser. See [galaxy-web.md](galaxy-web.md). That server reads the local message index instead of this feed, and it labels those states as guesses. The desktop app is unchanged.

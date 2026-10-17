@@ -17,6 +17,8 @@ import {
   type SourceKey,
   type SourceReport,
 } from "./adapters";
+import type { GalaxyPayload, GrokPublic } from "./galaxyPayload";
+import { GROK_UNAVAILABLE } from "./grokIndex";
 
 interface Model {
   demo: boolean;
@@ -24,6 +26,7 @@ interface Model {
   sources: SourceReport[];
   connected: boolean;
   config: OverseerPublicConfig | null;
+  grokAgents: GrokPublic[];
 }
 
 interface Form {
@@ -98,7 +101,7 @@ function layout(fronts: Front[], w: number, h: number) {
   return { cores, nodes };
 }
 
-export function OverseerView() {
+export function OverseerView({ web = false }: { web?: boolean }) {
   const now = useMinuteClock();
   const [model, setModel] = useState<Model | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -107,48 +110,82 @@ export function OverseerView() {
   const [note, setNote] = useState<string | null>(null);
 
   const refresh = async () => {
+    if (web) {
+      const res = await fetch("/api/galaxy");
+      if (!res.ok) throw new Error("The galaxy could not be read.");
+      const payload: unknown = await res.json();
+      if (!isGalaxyPayload(payload)) throw new Error("The galaxy could not be read.");
+      setModel({ demo: payload.demo, fronts: payload.fronts, sources: payload.sources, grokAgents: payload.grokAgents, connected: true, config: null });
+      return;
+    }
     if (!inTauri()) {
-      setModel({ ...demoSnapshot(), connected: false, config: null });
+      setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [] });
       return;
     }
     const config = await api.overseerConfig();
     setForm((f) => ({ ...f, ...formFrom(config), cursorKey: "", githubToken: "", hermesKey: "" }));
     if (config.demo) {
-      setModel({ ...demoSnapshot(), connected: true, config });
+      setModel({ ...demoSnapshot(), connected: true, config, grokAgents: [] });
       return;
     }
     const raw = await api.overseerRefresh();
-    setModel({ ...assemble(raw), demo: false, connected: true, config });
+    setModel({ ...assemble(raw), demo: false, connected: true, config, grokAgents: [] });
   };
 
   useEffect(() => {
-    void refresh().catch((e: unknown) => {
-      const message = e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Sources could not be read.";
-      if (!inTauri()) {
-        setModel({ ...demoSnapshot(), connected: false, config: null });
-        return;
-      }
-      const fail = (key: SourceKey, label: string): SourceReport => ({ key, label, mode: "error", detail: message });
-      setModel({
-        demo: false,
-        fronts: [],
-        connected: true,
-        config: null,
-        sources: [fail("cursor", "Cursor cloud agents"), fail("github", "GitHub"), fail("hermes", "Hermes"), fail("grok", "Grok bots")],
+    let stop = false;
+    const run = () => {
+      void refresh().catch((e: unknown) => {
+        if (stop) return;
+        const message = e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : "Sources could not be read.";
+        if (web) {
+          const fail = (key: SourceKey, label: string): SourceReport => ({ key, label, mode: "error", detail: "The galaxy could not be read." });
+          setModel({
+            demo: false,
+            fronts: [],
+            connected: false,
+            config: null,
+            grokAgents: [],
+            sources: [fail("cursor", "Cursor cloud agents"), fail("github", "GitHub"), fail("hermes", "Hermes"), fail("grok", "Grok bots")],
+          });
+          return;
+        }
+        if (!inTauri()) {
+          setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [] });
+          return;
+        }
+        const fail = (key: SourceKey, label: string): SourceReport => ({ key, label, mode: "error", detail: message });
+        setModel({
+          demo: false,
+          fronts: [],
+          connected: true,
+          config: null,
+          grokAgents: [],
+          sources: [fail("cursor", "Cursor cloud agents"), fail("github", "GitHub"), fail("hermes", "Hermes"), fail("grok", "Grok bots")],
+        });
       });
-    });
-    // First paint only. Refresh is explicit after that.
+    };
+    run();
+    if (!web) return;
+    const timer = setInterval(run, 4000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+    // First paint only. The desktop refresh stays explicit. The web view polls.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [web]);
 
   const fronts = model?.fronts ?? [];
   const waiting = needsYou(fronts);
   const selected = fronts.find((f) => f.id === selectedId) ?? null;
+  const lastRole = selected ? model?.grokAgents.find((agent) => selected.id === `grok:${agent.id}`)?.lastRole ?? null : null;
+  const grokDown = !!model?.sources.some((source) => source.key === "grok" && source.detail === GROK_UNAVAILABLE);
 
   const save = async () => {
     setNote(null);
     if (!inTauri()) {
-      setModel(form.demo ? { ...demoSnapshot(), connected: false, config: null } : { ...disconnectedSnapshot(), connected: false, config: null });
+      setModel(form.demo ? { ...demoSnapshot(), connected: false, config: null, grokAgents: [] } : { ...disconnectedSnapshot(), connected: false, config: null, grokAgents: [] });
       setNote("This preview does not store tokens or call the network.");
       setSourcesOpen(false);
       return;
@@ -161,19 +198,26 @@ export function OverseerView() {
 
   return (
     <div className="absolute inset-0 flex bg-void">
-      <Inbox fronts={fronts} waiting={waiting} selectedId={selectedId} now={now} onSelect={setSelectedId} />
+      <Inbox fronts={fronts} waiting={waiting} selectedId={selectedId} now={now} onSelect={setSelectedId} web={web} sources={model?.sources ?? []} />
       <div className="relative min-w-0 flex-1">
-        <Sky fronts={fronts} selectedId={selectedId} onSelect={setSelectedId} />
+        <Sky fronts={fronts} selectedId={selectedId} onSelect={setSelectedId} web={web} />
         <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
           {model?.demo && <span className="rounded-full border border-line px-2 py-1 text-[11px] text-ink-3">Demo data</span>}
-          <button className="btn" onClick={() => void refresh().catch(() => setNote("Could not refresh."))}>Refresh</button>
-          <button className="btn" onClick={() => setSourcesOpen(true)}>Sources</button>
+          {!web && <button className="btn" onClick={() => void refresh().catch(() => setNote("Could not refresh."))}>Refresh</button>}
+          {!web && <button className="btn" onClick={() => setSourcesOpen(true)}>Sources</button>}
         </div>
-        {!model && <div className="absolute bottom-4 left-4 text-[12px] text-ink-3">Reading sources…</div>}
-        {model && fronts.length === 0 && <div className="absolute inset-0 flex items-center justify-center text-[13px] text-ink-3">No fronts yet.</div>}
+        {!model && <div className="absolute bottom-4 left-4 text-[12px] text-ink-3">{web ? "Reading the galaxy…" : "Reading sources…"}</div>}
+        {model && fronts.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-[13px] text-ink-3" data-galaxy={grokDown ? "grok-unavailable" : undefined}>
+            {grokDown ? GROK_UNAVAILABLE : "No fronts yet."}
+          </div>
+        )}
+        {grokDown && fronts.length > 0 && (
+          <div className="absolute top-3 left-4 z-10 rounded-full border border-line bg-ground/90 px-3 py-1 text-[12px] text-ink-2" data-galaxy="grok-unavailable">{GROK_UNAVAILABLE}</div>
+        )}
       </div>
-      {selected && <Detail front={selected} demo={!!model?.demo} onClose={() => setSelectedId(null)} />}
-      {sourcesOpen && (
+      {selected && <Detail front={selected} demo={!!model?.demo} web={web} lastRole={lastRole} onClose={() => setSelectedId(null)} />}
+      {!web && sourcesOpen && (
         <Sources
           form={form}
           setForm={setForm}
@@ -188,13 +232,13 @@ export function OverseerView() {
   );
 }
 
-function Inbox({ fronts, waiting, selectedId, now, onSelect }: { fronts: Front[]; waiting: Front[]; selectedId: string | null; now: number; onSelect: (id: string) => void }) {
+function Inbox({ fronts, waiting, selectedId, now, onSelect, web = false, sources = [] }: { fronts: Front[]; waiting: Front[]; selectedId: string | null; now: number; onSelect: (id: string) => void; web?: boolean; sources?: SourceReport[] }) {
   const counts = countStates(fronts);
   return (
     <aside className="flex w-[300px] shrink-0 flex-col border-r border-line bg-ground/90" data-overseer="inbox">
       <div className="px-4 pt-[18px] pb-2">
         <div className="eyebrow">Needs you</div>
-        <div className="mt-1 text-[28px] leading-none font-medium tracking-tight text-ink">{waiting.length}</div>
+        <div className="mt-1 text-[28px] leading-none font-medium tracking-tight text-ink" data-galaxy="needs-you">{waiting.length}</div>
         <p className="mt-1 text-[12px] text-ink-3">{waiting.length ? "Longest wait first." : "Nothing is waiting on you."}</p>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
@@ -214,12 +258,17 @@ function Inbox({ fronts, waiting, selectedId, now, onSelect }: { fronts: Front[]
           </button>
         ))}
       </div>
-      <div className="border-t border-line px-4 py-2.5 text-[11px] text-ink-4">{counts}</div>
+      <div className="border-t border-line px-4 py-2.5 text-[11px] text-ink-4">
+        {counts}
+        {web && sources.filter((source) => source.mode !== "fixture").map((source) => (
+          <div key={source.key} className="mt-1 text-ink-3" data-galaxy={source.detail === GROK_UNAVAILABLE ? "grok-unavailable" : undefined}>{source.label}: {source.detail}</div>
+        ))}
+      </div>
     </aside>
   );
 }
 
-function Sky({ fronts, selectedId, onSelect }: { fronts: Front[]; selectedId: string | null; onSelect: (id: string) => void }) {
+function Sky({ fronts, selectedId, onSelect, web = false }: { fronts: Front[]; selectedId: string | null; onSelect: (id: string) => void; web?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   useLayoutEffect(() => {
@@ -256,24 +305,47 @@ function Sky({ fronts, selectedId, onSelect }: { fronts: Front[]; selectedId: st
       {nodes.map((n) => {
         const on = n.f.id === selectedId;
         const color = HALO[n.f.state];
+        const label = web && n.f.reason ? `${n.f.title} — ${n.f.reason}` : `${n.f.title} — ${STATE_LABEL[n.f.state]}`;
+        const dot = (
+          <span
+            className={`block h-[18px] w-[18px] rounded-full bg-void ${n.f.state === "needs-you" ? "hoku-need" : ""}`}
+            style={{ boxShadow: `0 0 0 ${on ? 2 : 1}px ${color}, 0 0 ${n.f.state === "needs-you" ? 16 : 8}px ${color}${on ? "" : "66"}` }}
+          />
+        );
+        const place = { left: n.x, top: n.y, transform: "translate(-50%, -50%)" };
+        if (web && n.f.url) {
+          return (
+            <a
+              key={n.f.id}
+              href={n.f.url}
+              title={label}
+              data-star={n.f.id}
+              target={n.f.url.startsWith("http") ? "_blank" : undefined}
+              rel="noreferrer"
+              onMouseEnter={() => onSelect(n.f.id)}
+              onFocus={() => onSelect(n.f.id)}
+              className="absolute"
+              style={place}
+            >
+              {dot}
+            </a>
+          );
+        }
         return (
           <button
             key={n.f.id}
-            title={`${n.f.title} — ${STATE_LABEL[n.f.state]}`}
+            title={label}
             onClick={() => onSelect(n.f.id)}
             className="absolute"
-            style={{ left: n.x, top: n.y, transform: "translate(-50%, -50%)" }}
+            style={place}
           >
-            <span
-              className={`block h-[18px] w-[18px] rounded-full bg-void ${n.f.state === "needs-you" ? "hoku-need" : ""}`}
-              style={{ boxShadow: `0 0 0 ${on ? 2 : 1}px ${color}, 0 0 ${n.f.state === "needs-you" ? 16 : 8}px ${color}${on ? "" : "66"}` }}
-            />
+            {dot}
           </button>
         );
       })}
       {nodes.filter((n) => n.f.state === "needs-you" || n.f.id === selectedId).map((n) => (
-        <div key={`t-${n.f.id}`} className="pointer-events-none absolute max-w-[140px] truncate text-[11px] text-ink-2" style={{ left: n.x + 14, top: n.y - 8 }}>
-          {n.f.title}
+        <div key={`t-${n.f.id}`} className="pointer-events-none absolute max-w-[180px] truncate text-[11px] text-ink-2" style={{ left: n.x + 14, top: n.y - 8 }}>
+          {n.f.title}{web && n.f.reason?.startsWith("~") ? ` · ${n.f.reason}` : ""}
         </div>
       ))}
       <div className="absolute bottom-3 left-4 flex gap-3 text-[11px] text-ink-4">
@@ -288,7 +360,8 @@ function Sky({ fronts, selectedId, onSelect }: { fronts: Front[]; selectedId: st
   );
 }
 
-function Detail({ front, demo, onClose }: { front: Front; demo: boolean; onClose: () => void }) {
+function Detail({ front, demo, onClose, web = false, lastRole = null }: { front: Front; demo: boolean; onClose: () => void; web?: boolean; lastRole?: "user" | "assistant" | null }) {
+  const guess = web && front.source === "grok";
   return (
     <aside className="flex w-[320px] shrink-0 flex-col border-l border-line bg-panel" data-overseer="detail">
       <div className="flex items-start justify-between gap-3 px-4 pt-4">
@@ -300,15 +373,24 @@ function Detail({ front, demo, onClose }: { front: Front; demo: boolean; onClose
       </div>
       <div className="mt-3 flex items-center gap-2 px-4">
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: HALO[front.state] }} />
-        <span className="text-[12.5px] text-ink-2">{STATE_LABEL[front.state]}</span>
+        <span className="text-[12.5px] text-ink-2">{guess && front.reason ? front.reason : STATE_LABEL[front.state]}</span>
         <span className="text-[12px] text-ink-4">{front.project}</span>
       </div>
-      {front.reason && <p className="mt-3 px-4 text-[13.5px] text-ink">{front.reason}</p>}
+      {front.reason && <p className="mt-3 px-4 text-[13.5px] text-ink" data-galaxy={guess ? "guess" : undefined}>{front.reason}</p>}
       {front.detail && <p className="mt-2 px-4 text-[12.5px] text-ink-3">{front.detail}</p>}
+      {guess && (
+        <p className="mt-2 px-4 text-[12px] text-ink-3">
+          Guess{lastRole ? ` · last message from ${lastRole === "user" ? "you" : "the bot"}` : ""}. The index has no turn or approval data.
+        </p>
+      )}
       <div className="mt-4 px-4 text-[11.5px] text-ink-4">{relativeTime(front.updatedAt)} · {front.source}</div>
       {demo && <p className="mt-3 px-4 text-[12px] text-ink-3">Sample front. The link is invented and opens nowhere real.</p>}
       <div className="mt-auto border-t border-line p-4">
-        <button className="btn btn-primary" disabled={!front.url} onClick={() => void jump(front)}>{jumpLabel(front.kind)}</button>
+        {web ? (
+          front.url ? <a className="btn btn-primary" href={front.url} target={front.url.startsWith("http") ? "_blank" : undefined} rel="noreferrer">{jumpLabel(front.kind)}</a> : null
+        ) : (
+          <button className="btn btn-primary" disabled={!front.url} onClick={() => void jump(front)}>{jumpLabel(front.kind)}</button>
+        )}
         {front.url ? <div className="mt-2 break-all font-mono text-[11px] text-ink-4">{front.url}</div> : <div className="mt-2 text-[12px] text-ink-3">No jump link for this front.</div>}
       </div>
     </aside>
@@ -397,6 +479,12 @@ async function jump(front: Front) {
     return;
   }
   window.open(front.url, "_blank", "noopener,noreferrer");
+}
+
+function isGalaxyPayload(value: unknown): value is GalaxyPayload {
+  if (!value || typeof value !== "object") return false;
+  const row = value as GalaxyPayload;
+  return typeof row.demo === "boolean" && Array.isArray(row.fronts) && Array.isArray(row.sources) && Array.isArray(row.grokAgents);
 }
 
 function formFrom(config: OverseerPublicConfig): Pick<Form, "demo" | "cursorOn" | "githubOn" | "hermesOn" | "grokOn" | "hermesDashboard" | "hermesApi" | "grokFeed"> {
