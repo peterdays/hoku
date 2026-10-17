@@ -6,5 +6,5 @@
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true, "types": ["node"]
   },
-  "include": ["vite.config.ts"]
+  "include": ["vite.config.ts", "vite.galaxy.config.ts", "vite.galaxy-server.config.ts"]
 }
