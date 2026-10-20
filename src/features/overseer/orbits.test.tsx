@@ -12,6 +12,7 @@ import {
   MENTION_TIP,
   ORBIT_CAP,
   OTHER_BOTS,
+  parseRecentDays,
   placeOrbits,
   prVisibility,
   readAgentPage,
@@ -142,6 +143,8 @@ describe("buildOrbits", () => {
     const model = buildOrbits({
       bots: [bot("notes", "probably-waiting"), bot("alone", "probably-waiting")],
       mentions: [mention("notes", [[PARENT, 3, 20]], [["hoku-demo/site", 2, 20]])],
+      prKnown: true,
+      now: Date.parse("2026-10-17T12:00:00Z"),
       cursorItems: [
         cursor({ id: PARENT, name: "performance gains", repository: "hoku-demo/site" }),
         cursor({ id: THREAD, name: "Cache headers", parentId: PARENT, repository: "hoku-demo/site", prUrl: OPEN, prTitle: "Pagination fix", githubPr: "open", runStatus: "FINISHED" }),
@@ -177,6 +180,8 @@ describe("buildOrbits", () => {
     const model = buildOrbits({
       bots: [],
       mentions: [],
+      prKnown: false,
+      now: Date.parse("2026-10-17T12:00:00Z"),
       cursorItems: [
         cursor({ id: THREAD, name: "Schema notes", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/4", runStatus: "FINISHED" }),
         cursor({ id: BC("000000000012"), name: "API types", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/2", githubPr: "open", runStatus: "FINISHED" }),
@@ -193,6 +198,7 @@ describe("buildOrbits", () => {
     const model = buildOrbits({
       bots: [],
       mentions: [],
+      prKnown: true,
       cursorItems: [
         cursor({ id: PARENT, name: "performance gains", repository: "hoku-demo/site" }),
         cursor({ id: THREAD, name: "Closed", parentId: PARENT, repository: "hoku-demo/site", prUrl: OPEN, githubPr: "closed" }),
@@ -200,6 +206,84 @@ describe("buildOrbits", () => {
       review: [],
     });
     expect(model.clusters).toEqual([]);
+  });
+});
+
+describe("work filter", () => {
+  const NOW = Date.parse("2026-10-17T12:00:00Z");
+  const day = 24 * 60 * 60 * 1000;
+
+  it("shows a running old item, a finished recent item, and hides a finished old item", () => {
+    const model = buildOrbits({
+      bots: [],
+      mentions: [],
+      prKnown: false,
+      now: NOW,
+      cursorItems: [
+        cursor({ id: THREAD, name: "Still going", repository: "hoku-demo/site", runStatus: "RUNNING", updatedAt: new Date(NOW - 30 * day).toISOString() }),
+        cursor({ id: BC("000000000012"), name: "Fresh finish", repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - day).toISOString() }),
+        cursor({ id: BC("000000000013"), name: "OLD_FINISH", repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - 10 * day).toISOString() }),
+        cursor({ id: BC("000000000014"), name: "Creating", repository: "hoku-demo/site", runStatus: "CREATING", status: "IDLE", updatedAt: new Date(NOW - 40 * day).toISOString() }),
+      ],
+      review: [],
+    });
+    const titles = model.clusters[0].work.map((star) => star.title).sort();
+    expect(titles).toEqual(["Creating", "Fresh finish", "Still going"]);
+    expect(model.clusters[0].hidden).toBe(1);
+    expect(JSON.stringify(model)).not.toContain("OLD_FINISH");
+  });
+
+  it("with a known pull-request state, keeps open pull requests and running work", () => {
+    const model = buildOrbits({
+      bots: [],
+      mentions: [],
+      prKnown: true,
+      now: NOW,
+      cursorItems: [
+        cursor({ id: THREAD, name: "Open old", repository: "hoku-demo/site", prUrl: OPEN, githubPr: "open", runStatus: "FINISHED", updatedAt: new Date(NOW - 30 * day).toISOString() }),
+        cursor({ id: BC("000000000012"), name: "CLOSED_OLD", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/2", githubPr: "closed", runStatus: "FINISHED", updatedAt: new Date(NOW - day).toISOString() }),
+        cursor({ id: BC("000000000013"), name: "NO_PR", repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - day).toISOString() }),
+        cursor({ id: BC("000000000014"), name: "Running closed", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/8", githubPr: "closed", runStatus: "RUNNING", updatedAt: new Date(NOW - 30 * day).toISOString() }),
+      ],
+      review: [],
+    });
+    expect(model.clusters[0].work.map((star) => star.title).sort()).toEqual(["Open old", "Running closed"]);
+    expect(model.clusters[0].hidden).toBe(2);
+    expect(JSON.stringify(model)).not.toContain("CLOSED_OLD");
+    expect(JSON.stringify(model)).not.toContain("NO_PR");
+  });
+
+  it("drops a cursor project when every thread is hidden, and keeps the repo for its bots", () => {
+    const model = buildOrbits({
+      bots: [bot("notes")],
+      mentions: [mention("notes", [], [["hoku-demo/site", 2, 20]])],
+      prKnown: false,
+      now: NOW,
+      cursorItems: [
+        cursor({ id: PARENT, name: "performance gains", repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - 10 * day).toISOString() }),
+        cursor({ id: THREAD, name: "OLD_A", parentId: PARENT, repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - 10 * day).toISOString() }),
+        cursor({ id: BC("000000000012"), name: "OLD_B", parentId: PARENT, repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - 12 * day).toISOString() }),
+      ],
+      review: [],
+    });
+    const site = model.clusters.find((cluster) => cluster.slug === "hoku-demo/site");
+    expect(site?.work).toEqual([]);
+    expect(site?.bots.map((item) => item.id)).toEqual(["grok:notes"]);
+    expect(site?.hidden).toBe(3);
+    expect(JSON.stringify(model)).not.toContain("performance gains");
+    expect(JSON.stringify(model)).not.toContain("cursor-project");
+  });
+
+  it("reads the recent window from the env string", () => {
+    expect(parseRecentDays(undefined)).toBe(3);
+    expect(parseRecentDays("")).toBe(3);
+    expect(parseRecentDays("nope")).toBe(3);
+    expect(parseRecentDays("1")).toBe(1);
+    const recent = cursor({ id: THREAD, name: "Two days", repository: "hoku-demo/site", runStatus: "FINISHED", updatedAt: new Date(NOW - 2 * day).toISOString() });
+    const wide = buildOrbits({ bots: [], mentions: [], prKnown: false, now: NOW, recentDays: 3, cursorItems: [recent], review: [] });
+    const narrow = buildOrbits({ bots: [], mentions: [], prKnown: false, now: NOW, recentDays: 1, cursorItems: [recent], review: [] });
+    expect(wide.clusters[0].work.map((star) => star.title)).toEqual(["Two days"]);
+    expect(narrow.clusters).toEqual([]);
   });
 });
 
@@ -212,7 +296,7 @@ describe("orbit layout", () => {
   }
 
   it("collapses a ring past the cap until it is expanded", () => {
-    const cluster: OrbitCluster = { name: "site", url: "https://github.com/hoku-demo/site", slug: "hoku-demo/site", bots: [], work: Array.from({ length: 50 }, (_, i) => work(String(i).padStart(2, "0"))) };
+    const cluster: OrbitCluster = { name: "site", url: "https://github.com/hoku-demo/site", slug: "hoku-demo/site", hidden: 0, bots: [], work: Array.from({ length: 50 }, (_, i) => work(String(i).padStart(2, "0"))) };
     const collapsed = placeOrbits([cluster], 1200, 800, new Set());
     expect(collapsed.nodes).toHaveLength(ORBIT_CAP);
     expect(collapsed.badges).toEqual([expect.objectContaining({ key: "site:work", count: 50 - ORBIT_CAP, plus: true })]);
@@ -245,5 +329,7 @@ describe("orbit layout", () => {
     expect(payload.fronts.find((front) => front.title === "Pagination fix")).toMatchObject({ kind: "cloud-agent", project: "site", state: "needs-you" });
     expect(payload.fronts.find((front) => front.id === "grok:release-notes")?.project).toBe("site");
     expect(payload.fronts.some((front) => front.kind === "github-pr" && front.url.endsWith("/pull/18"))).toBe(false);
+    expect(html).toContain("+1 older hidden");
+    expect(payload.orbits.find((cluster) => cluster.name === "site")?.work).not.toEqual([]);
   });
 });

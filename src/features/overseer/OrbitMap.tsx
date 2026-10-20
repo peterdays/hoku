@@ -47,6 +47,7 @@ export function OrbitMap({ model, selectedId, onSelect, onToggle }: { model: Sky
           <>
             <div className="mx-auto h-[7px] w-[7px] rounded-full bg-star" style={{ boxShadow: "0 0 14px #f1ead8" }} />
             <div className="mt-1.5 text-center text-[12.5px] whitespace-nowrap text-star">{core.name}</div>
+            {core.hidden > 0 && <div className="text-center text-[10px] whitespace-nowrap text-ink-4" data-hidden={core.hidden}>+{core.hidden} older hidden</div>}
           </>
         );
         const place = { left: core.x, top: core.y, transform: "translate(-50%, -50%)" };

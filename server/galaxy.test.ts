@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GROK_UNAVAILABLE } from "../src/features/overseer/grokIndex.ts";
 import { livePayload, type GalaxyPayload } from "../src/features/overseer/galaxyPayload.ts";
 import type { OverseerRefresh } from "../src/features/overseer/adapters.ts";
-import { startGalaxy } from "./galaxy.ts";
+import { envFromProcess, startGalaxy } from "./galaxy.ts";
 import { openReadOnly, pathAllowed, readGrok, readOnlyUri } from "./grokRead.ts";
 import { httpAllowed } from "./remote.ts";
 
@@ -196,7 +196,7 @@ describe("GET /api/galaxy", () => {
         const grok = readGrok(indexPath, agentsPath, NOW, 15);
         return livePayload(raw, grok.available
           ? { available: true, agents: grok.agents, mentions: grok.mentions, activeMinutes: 15 }
-          : { available: false });
+          : { available: false }, { prKnown: true, now: NOW });
       },
     });
     try {
@@ -213,6 +213,7 @@ describe("GET /api/galaxy", () => {
       expect(text).not.toContain("HIDDEN_CLOSED");
       const json = JSON.parse(text) as GalaxyPayload;
       const site = json.orbits.find((cluster) => cluster.slug === "hoku-demo/site");
+      expect(site?.hidden).toBe(1);
       const bot = site?.bots.find((star) => star.id === "grok:bot-active");
       expect(bot?.mentions).toBeGreaterThanOrEqual(2);
       expect(bot?.lastMentioned).toBe(new Date(NOW - 9 * MIN).toISOString());
@@ -235,5 +236,13 @@ describe("GET /api/galaxy", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("galaxy env", () => {
+  it("reads the recent-window override and falls back to 3 days", () => {
+    expect(envFromProcess({ HOKU_GALAXY_RECENT_DAYS: "9" }).recentDays).toBe(9);
+    expect(envFromProcess({}).recentDays).toBe(3);
+    expect(envFromProcess({ HOKU_GALAXY_RECENT_DAYS: "nope" }).recentDays).toBe(3);
   });
 });

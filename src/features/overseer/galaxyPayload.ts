@@ -1,6 +1,6 @@
 import { assemble, demoSnapshot, rankFronts, type Front, type OverseerRefresh, type SourceReport } from "./adapters";
 import { frontsFromGrokAgents, GROK_UNAVAILABLE, type GrokAgentState, type GrokGuess } from "./grokIndex";
-import { buildOrbits, OTHER_BOTS, withOrbits, type BotMentions, type OrbitCluster, type OrbitStar } from "./orbits";
+import { buildOrbits, OTHER_BOTS, RECENT_DAYS_DEFAULT, withOrbits, type BotMentions, type OrbitCluster, type OrbitStar } from "./orbits";
 
 const DEMO_AT = Date.parse("2026-10-17T11:00:00Z");
 const demoId = (n: string) => `bc-00000000-0000-4000-8000-${n}`;
@@ -15,11 +15,11 @@ const DEMO_CURSOR = [
   { id: demoId("000000000010"), name: "performance gains", status: "IDLE", runStatus: "FINISHED", updatedAt: "2026-10-17T10:00:00Z", repository: "hoku-demo/site", url: `https://cursor.com/agents/${demoId("000000000010")}` },
   { id: demoId("000000000011"), name: "Cache headers", status: "IDLE", runStatus: "FINISHED", parentId: demoId("000000000010"), updatedAt: "2026-10-17T10:30:00Z", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/lumen/pull/18", prTitle: "Pagination fix", githubPr: "open", url: `https://cursor.com/agents/${demoId("000000000011")}` },
   { id: demoId("000000000012"), name: "Fonts", status: "ACTIVE", runStatus: "RUNNING", parentId: demoId("000000000010"), updatedAt: "2026-10-17T11:00:00Z", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/19", githubPr: "open", url: `https://cursor.com/agents/${demoId("000000000012")}` },
-  { id: demoId("000000000013"), name: "Old thread", status: "IDLE", runStatus: "FINISHED", parentId: demoId("000000000010"), updatedAt: "2026-10-16T10:00:00Z", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/3", githubPr: "merged" },
+  { id: demoId("000000000013"), name: "Old thread", status: "IDLE", runStatus: "FINISHED", parentId: demoId("000000000010"), updatedAt: "2026-10-01T10:00:00Z", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/3", githubPr: "merged" },
   { id: demoId("000000000014"), name: "List virtualization", status: "ACTIVE", runStatus: "RUNNING", updatedAt: "2026-10-17T11:10:00Z", repository: "hoku-demo/site", prUrl: "https://github.com/hoku-demo/site/pull/30", githubPr: "open", url: `https://cursor.com/agents/${demoId("000000000014")}` },
   { id: demoId("000000000015"), name: "API types", status: "IDLE", runStatus: "FINISHED", updatedAt: "2026-10-16T08:00:00Z", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/2", githubPr: "open", url: `https://cursor.com/agents/${demoId("000000000015")}` },
   { id: demoId("000000000016"), name: "Schema notes", status: "IDLE", runStatus: "FINISHED", updatedAt: "2026-10-16T09:00:00Z", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/4", url: `https://cursor.com/agents/${demoId("000000000016")}` },
-  { id: demoId("000000000017"), name: "Merged notes", status: "IDLE", runStatus: "FINISHED", updatedAt: "2026-10-15T09:00:00Z", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/1", githubPr: "closed" },
+  { id: demoId("000000000017"), name: "Merged notes", status: "IDLE", runStatus: "FINISHED", updatedAt: "2026-10-01T09:00:00Z", repository: "hoku-demo/hoku", prUrl: "https://github.com/hoku-demo/hoku/pull/1", githubPr: "closed" },
 ];
 
 export interface GrokPublic {
@@ -89,6 +89,7 @@ function publicCluster(cluster: OrbitCluster): Record<string, unknown> {
     name: cluster.name,
     url: cluster.url,
     slug: cluster.slug,
+    hidden: cluster.hidden,
     bots: cluster.bots.map((star) => publicStar(star)),
     work: cluster.work.map((star) => publicStar(star)),
   };
@@ -123,6 +124,9 @@ export function webDemo(): GalaxyPayload {
     mentions: DEMO_MENTIONS,
     cursorItems: DEMO_CURSOR,
     review: kept.filter((front) => front.kind === "github-pr" && front.state === "needs-you").map((front) => ({ url: front.url, reason: front.reason })),
+    prKnown: false,
+    now: Date.parse("2026-10-17T12:00:00Z"),
+    recentDays: 3,
   });
   return withOrbits({
     demo: true,
@@ -138,6 +142,7 @@ export function webDemo(): GalaxyPayload {
 export function livePayload(
   raw: OverseerRefresh,
   grok: { available: true; agents: GrokAgentState[]; mentions: BotMentions[]; activeMinutes: number } | { available: false },
+  opts: { prKnown?: boolean; recentDays?: number; now?: number } = {},
 ): GalaxyPayload {
   const base = assemble({ ...raw, grokText: null, grokError: null, grokNote: "", grokSkipped: true });
   const payload: GalaxyPayload = !grok.available
@@ -171,18 +176,24 @@ export function livePayload(
         orbits: [],
       };
   const bots = grok.available ? grok.agents : [];
+  const prKnown = opts.prKnown === true;
+  const recentDays = opts.recentDays ?? RECENT_DAYS_DEFAULT;
   const model = buildOrbits({
     bots: bots.map((bot) => ({ id: bot.id, name: bot.name, state: bot.state, lastTimestamp: bot.lastTimestamp })),
     mentions: grok.available ? grok.mentions : [],
     cursorItems: raw.cursorSkipped || raw.cursorError ? [] : raw.cursorItems,
     review: payload.fronts.filter((front) => front.kind === "github-pr" && front.state === "needs-you").map((front) => ({ url: front.url, reason: front.reason })),
+    prKnown,
+    recentDays,
+    now: opts.now,
   });
   const merged = withOrbits(payload, model);
   if (!raw.cursorSkipped && !raw.cursorError) {
     const shown = merged.orbits.reduce((sum, cluster) => sum + cluster.work.reduce((inner, star) => inner + (star.threads.length || (star.kind === "cloud-agent" ? 1 : 0)), 0), 0);
-    merged.sources = merged.sources.map((source) => source.key === "cursor"
-      ? { ...source, detail: `${shown} cloud agents on the map. Closed and merged pull requests are hidden. A finished run needs you only when its pull request asks for review.` }
-      : source);
+    const detail = prKnown
+      ? `${shown} cloud agents on the map. Open pull requests and running work stay. Closed and merged pull requests are hidden unless the run is still going.`
+      : `${shown} cloud agents on the map. No GitHub token, so finished work older than ${recentDays} days is hidden.`;
+    merged.sources = merged.sources.map((source) => source.key === "cursor" ? { ...source, detail } : source);
   }
   return merged;
 }

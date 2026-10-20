@@ -13,6 +13,9 @@ export const CURSOR_CACHE_MS = 60_000;
 export const ORBIT_CAP = 8;
 export const OTHER_BOTS = "Other bots";
 export const MENTION_TIP = "linked by mentions in chat";
+export const RECENT_DAYS_DEFAULT = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TERMINAL_RUN = new Set(["FINISHED", "ERROR", "FAILED", "CANCELLED", "CANCELED", "EXPIRED", "IDLE", "ARCHIVED"]);
 
 export interface MentionRow {
   agentId: string;
@@ -73,6 +76,8 @@ export interface OrbitCluster {
   slug: string | null;
   bots: OrbitStar[];
   work: OrbitStar[];
+  /** Finished work left off the ring. Not a control. */
+  hidden: number;
 }
 
 export interface OrbitModel {
@@ -324,6 +329,27 @@ export function prVisibility(prUrl: string | null, github: PrKind | null, cursor
   return "unknown";
 }
 
+/** `HOKU_GALAXY_RECENT_DAYS`. Blank or unreadable values stay on the default. */
+export function parseRecentDays(raw: string | undefined): number {
+  if (raw == null || raw.trim() === "") return RECENT_DAYS_DEFAULT;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days < 0) return RECENT_DAYS_DEFAULT;
+  return days;
+}
+
+/** CREATING, RUNNING, ACTIVE, and any status that is not a finished run. */
+export function isActiveRun(runStatus: string | null, status: string): boolean {
+  const run = (runStatus ?? "").trim().toUpperCase();
+  if (run) return !TERMINAL_RUN.has(run);
+  const list = status.trim().toUpperCase();
+  return list.length > 0 && !TERMINAL_RUN.has(list);
+}
+
+function updatedWithin(updatedAt: string, now: number, recentMs: number): boolean {
+  const at = Date.parse(updatedAt);
+  return Number.isFinite(at) && now - at <= recentMs;
+}
+
 function liveStatus(status: string): { state: FrontState; reason: string } {
   switch (status.toUpperCase()) {
     case "CREATING":
@@ -407,15 +433,29 @@ export interface OrbitInput {
   mentions: BotMentions[];
   cursorItems: unknown[];
   review: { url: string; reason: string | null }[];
+  /** True when a GitHub token was used to read pull-request state. */
+  prKnown?: boolean;
+  now?: number;
+  recentDays?: number;
 }
 
 /**
  * Projects are GitHub repos. Bots orbit a repo when chat mentions it twice, or
  * when the bot that mentions an agent most (latest mention breaks a tie) is
- * attached to that agent's repo. Work is an open pull request, or a PR whose
- * state nobody reported. A coordinator with a visible thread is one star.
+ * attached to that agent's repo. With a GitHub token, work is an open pull
+ * request or a run that is still going. Without one, work is a live run or
+ * anything touched inside the recent window. A coordinator is one star when a
+ * thread survives.
  */
 export function buildOrbits(input: OrbitInput): OrbitModel {
+  const prKnown = input.prKnown === true;
+  const now = input.now ?? Date.now();
+  const recentMs = (input.recentDays ?? RECENT_DAYS_DEFAULT) * DAY_MS;
+  const survives = (agent: AgentRec) => {
+    const active = isActiveRun(agent.runStatus, agent.status);
+    if (prKnown) return agent.visibility === "open" || active;
+    return active || updatedWithin(agent.updatedAt, now, recentMs);
+  };
   const review = new Map(input.review.map((item) => [item.url, item.reason ?? "Review requested"]));
   const agents: AgentRec[] = [];
   for (const item of input.cursorItems) {
@@ -434,13 +474,12 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
     });
   }
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
-  const visible = (agent: AgentRec) => agent.visibility === "open" || agent.visibility === "unknown";
   const consumed = new Set<string>();
   const groups: { repo: string; star: OrbitStar }[] = [];
   const grouped = new Set<string>();
   for (const agent of agents) {
     if (!agent.parentId || !byId.has(agent.parentId) || grouped.has(agent.parentId)) continue;
-    const kids = agents.filter((item) => item.parentId === agent.parentId && visible(item));
+    const kids = agents.filter((item) => item.parentId === agent.parentId && survives(item));
     if (!kids.length) continue;
     const parent = byId.get(agent.parentId)!;
     const threads = kids.map(agentStar);
@@ -459,7 +498,7 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
         url: parent.url,
         guess: false,
         prUnknown: threads.some((thread) => thread.prUnknown),
-        needsYou: threads.some((thread) => thread.needsYou) || (visible(parent) && parent.needsYou),
+        needsYou: threads.some((thread) => thread.needsYou) || (survives(parent) && parent.needsYou),
         updatedAt: threads.map((thread) => thread.updatedAt).sort().at(-1) ?? parent.updatedAt,
         mentions: null,
         lastMentioned: null,
@@ -479,8 +518,17 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
   };
   for (const group of groups) put(group.repo, group.star);
   for (const agent of agents) {
-    if (consumed.has(agent.id) || !visible(agent) || !agent.repo) continue;
+    if (consumed.has(agent.id) || !survives(agent) || !agent.repo) continue;
     put(agent.repo, agentStar(agent));
+  }
+  const drawn = new Set<string>(consumed);
+  for (const stars of workByRepo.values()) {
+    for (const star of stars) if (star.kind === "cloud-agent") drawn.add(star.id.slice("cursor:".length));
+  }
+  const hiddenByRepo = new Map<string, number>();
+  for (const agent of agents) {
+    if (!agent.repo || drawn.has(agent.id)) continue;
+    hiddenByRepo.set(agent.repo, (hiddenByRepo.get(agent.repo) ?? 0) + 1);
   }
 
   const links = new Map<string, Map<string, BotLink>>();
@@ -536,7 +584,7 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
     bots.sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
     const work = (workByRepo.get(slug) ?? []).slice().sort((a, b) => (a.title < b.title ? -1 : 1));
     if (!bots.length && !work.length) continue;
-    clusters.push({ name, url: `https://github.com/${slug}`, slug, bots, work });
+    clusters.push({ name, url: `https://github.com/${slug}`, slug, bots, work, hidden: hiddenByRepo.get(slug) ?? 0 });
   }
   clusters.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
@@ -567,6 +615,7 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
         };
       }),
       work: [],
+      hidden: 0,
     });
   }
 
@@ -575,7 +624,7 @@ export function buildOrbits(input: OrbitInput): OrbitModel {
   for (const agent of agents) {
     if (!agent.prUrl) continue;
     if (agent.visibility === "closed" || agent.visibility === "merged") suppress.add(agent.prUrl);
-    if (!agent.needsYou) continue;
+    if (!survives(agent) || !agent.needsYou) continue;
     const cluster = clusters.find((item) => item.slug === agent.repo);
     attention.push({
       id: `cursor:${agent.id}`,
@@ -637,6 +686,7 @@ export interface SkyCore {
   key: string;
   name: string;
   href: string;
+  hidden: number;
   x: number;
   y: number;
 }
@@ -719,6 +769,7 @@ export function placeOrbits(clusters: OrbitCluster[], w: number, h: number, expa
       key: cluster.slug ?? cluster.name,
       name: cluster.name,
       href: cluster.url,
+      hidden: cluster.hidden,
       x: cx + Math.cos(angle) * (alone ? 0 : rx),
       y: cy + Math.sin(angle) * (alone ? 0 : ry),
     };
