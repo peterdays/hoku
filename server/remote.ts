@@ -1,4 +1,21 @@
 import type { OverseerRefresh } from "../src/features/overseer/adapters.ts";
+import { hash32 } from "../src/lib/hash.ts";
+import {
+  agentPageUrl,
+  applyPull,
+  cachedLoad,
+  CURSOR_AGENT_CAP,
+  CURSOR_CACHE_MS,
+  CURSOR_PAGE_LIMIT,
+  cursorItem,
+  parsePr,
+  readAgentPage,
+  readCursorAgent,
+  readPull,
+  stepAgents,
+  type CacheSlot,
+  type CursorFields,
+} from "../src/features/overseer/orbits.ts";
 
 const BLOCKED_PORT = 1340;
 
@@ -83,51 +100,119 @@ function clip(v: unknown, n: number): string | null {
   return s ? s.slice(0, n) : null;
 }
 
-async function fetchCursor(key: string | undefined): Promise<Pick<OverseerRefresh, "cursorItems" | "cursorRuns" | "cursorError" | "cursorSkipped">> {
+type CursorBundle = Pick<OverseerRefresh, "cursorItems" | "cursorRuns" | "cursorError" | "cursorSkipped">;
+
+const cursorSlot: { current: CacheSlot<Promise<CursorBundle>> | null } = { current: null };
+
+export function clearCursorCache(): void {
+  cursorSlot.current = null;
+}
+
+async function mapPool<T>(items: T[], n: number, fn: (item: T, index: number) => Promise<void>): Promise<void> {
+  if (!items.length) return;
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      await fn(items[index], index);
+    }
+  }));
+}
+
+async function fetchCursor(key: string | undefined, githubToken: string | undefined): Promise<CursorBundle> {
   if (!key) return { cursorItems: [], cursorRuns: [], cursorError: "No Cursor API key.", cursorSkipped: false };
   if (!usable(key)) return { cursorItems: [], cursorRuns: [], cursorError: "The credential contains whitespace and was not sent.", cursorSkipped: false };
+  const cacheKey = `${hash32(key)}:${githubToken && usable(githubToken) ? hash32(githubToken) : "0"}`;
   try {
-    const parsed = await getJson("https://api.cursor.com/v1/agents?limit=20&includeArchived=false", { Authorization: `Bearer ${key}` });
-    const items = Array.isArray(rec(parsed)?.items) ? rec(parsed)!.items as unknown[] : [];
-    const slim = [];
-    const runs = [];
-    for (const item of items.slice(0, 20)) {
-      const row = rec(item);
-      const id = str(row?.id);
-      if (!row || !id) continue;
-      slim.push({
-        id,
-        name: clip(row.name, 80),
-        status: clip(row.status, 40),
-        url: clip(row.url, 200),
-        updatedAt: clip(row.updatedAt, 40),
-        latestRunId: clip(row.latestRunId, 128),
-      });
-      const runId = str(row.latestRunId);
-      if (!runId || runs.length >= 10) continue;
-      try {
-        const run = rec(await getJson(`https://api.cursor.com/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`, { Authorization: `Bearer ${key}` }));
-        if (!run) continue;
-        const git = rec(run.git);
-        const branches = Array.isArray(git?.branches) ? git.branches.slice(0, 4).map((branch) => {
-          const b = rec(branch);
-          return { repoUrl: clip(b?.repoUrl, 200), prUrl: clip(b?.prUrl, 200) };
-        }) : [];
-        runs.push({
-          id: clip(run.id, 128),
-          agentId: clip(run.agentId, 128),
-          status: clip(run.status, 40),
-          updatedAt: clip(run.updatedAt, 40),
-          result: clip(run.result, 160),
-          git: { branches },
-        });
-      } catch {
-        /* A missing run leaves the list item. */
-      }
-    }
-    return { cursorItems: slim, cursorRuns: runs, cursorError: null, cursorSkipped: false };
+    return await cachedLoad(cursorSlot, cacheKey, Date.now(), CURSOR_CACHE_MS, () => loadCursor(key, githubToken));
   } catch (err) {
     return { cursorItems: [], cursorRuns: [], cursorError: explain("Cursor", err), cursorSkipped: false };
+  }
+}
+
+async function loadCursor(key: string, githubToken: string | undefined): Promise<CursorBundle> {
+  const auth = { Authorization: `Bearer ${key}` };
+  const rawItems: unknown[] = [];
+    let cursor: string | null = null;
+    let fetched = 0;
+    const seen = new Set<string>();
+    for (let page = 0; page < 10 && rawItems.length < CURSOR_AGENT_CAP; page++) {
+      const limit = Math.min(CURSOR_PAGE_LIMIT, CURSOR_AGENT_CAP - rawItems.length);
+      const parsed = await getJson(agentPageUrl(cursor, limit), auth);
+      const batch = readAgentPage(parsed);
+      rawItems.push(...batch.items.slice(0, CURSOR_AGENT_CAP - rawItems.length));
+      const step = stepAgents(fetched, batch, CURSOR_AGENT_CAP, seen);
+      fetched = rawItems.length;
+      if (!step.cursor) break;
+      seen.add(step.cursor);
+      cursor = step.cursor;
+    }
+    const slots: { fields: CursorFields | null; run: unknown }[] = rawItems.map(() => ({ fields: null, run: null }));
+    await mapPool(rawItems, 8, async (item, index) => {
+      const id = str(rec(item)?.id);
+      if (!id) return;
+      let detail: unknown = null;
+      let run: unknown = null;
+      try {
+        detail = await getJson(`https://api.cursor.com/v1/agents/${encodeURIComponent(id)}`, auth);
+      } catch {
+        /* The list row still places the agent when a run is missing. */
+      }
+      const runId = str(rec(item)?.latestRunId);
+      if (runId) {
+        try {
+          run = await getJson(`https://api.cursor.com/v1/agents/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`, auth);
+        } catch {
+          /* No run leaves the pull request unknown. */
+        }
+      }
+      slots[index] = { fields: readCursorAgent(item, detail, run), run };
+    });
+    const fields = slots.flatMap((slot) => slot.fields ? [slot.fields] : []);
+    if (githubToken && usable(githubToken)) await stampPulls(fields, githubToken);
+    const runs = slots.flatMap((slot) => slot.fields && slot.run ? [slimRun(slot.run)] : []).slice(0, 10);
+  return { cursorItems: fields.map((field) => cursorItem(field)), cursorRuns: runs, cursorError: null, cursorSkipped: false };
+}
+
+function slimRun(run: unknown): Record<string, unknown> {
+  const row = rec(run);
+  const git = rec(row?.git);
+  const branches = Array.isArray(git?.branches) ? git.branches.slice(0, 4).map((branch) => {
+    const b = rec(branch);
+    return { repoUrl: clip(b?.repoUrl, 200), prUrl: clip(b?.prUrl, 200) };
+  }) : [];
+  return {
+    id: clip(row?.id, 128),
+    agentId: clip(row?.agentId, 128),
+    status: clip(row?.status, 40),
+    updatedAt: clip(row?.updatedAt, 40),
+    result: clip(row?.result, 160),
+    git: { branches },
+  };
+}
+
+async function stampPulls(fields: CursorFields[], token: string): Promise<void> {
+  const urls = [...new Set(fields.map((field) => field.prUrl).filter((url): url is string => !!url))].slice(0, CURSOR_AGENT_CAP);
+  const found = new Map<string, { state: "open" | "closed" | "merged"; title: string | null } | null>();
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
+  await mapPool(urls, 6, async (url) => {
+    const pr = parsePr(url);
+    if (!pr) {
+      found.set(url, null);
+      return;
+    }
+    try {
+      const json = await getJson(`https://api.github.com/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.n}`, headers);
+      found.set(url, readPull(json));
+    } catch {
+      found.set(url, null);
+    }
+  });
+  for (let i = 0; i < fields.length; i++) {
+    const url = fields[i].prUrl;
+    const pull = url ? found.get(url) ?? null : null;
+    if (pull) fields[i] = applyPull(fields[i], pull);
   }
 }
 
@@ -233,7 +318,7 @@ async function fetchHermes(env: RemoteEnv): Promise<Pick<OverseerRefresh, "herme
 }
 
 export async function fetchRemote(env: RemoteEnv): Promise<OverseerRefresh> {
-  const [cursor, github, hermes] = await Promise.all([fetchCursor(env.cursorKey), fetchGithub(env.githubToken), fetchHermes(env)]);
+  const [cursor, github, hermes] = await Promise.all([fetchCursor(env.cursorKey, env.githubToken), fetchGithub(env.githubToken), fetchHermes(env)]);
   return {
     ...cursor,
     ...github,

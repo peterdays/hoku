@@ -19,6 +19,8 @@ import {
 } from "./adapters";
 import type { GalaxyPayload, GrokPublic } from "./galaxyPayload";
 import { GROK_UNAVAILABLE } from "./grokIndex";
+import { OrbitCanvas } from "./OrbitMap";
+import { findStar, MENTION_TIP, starFront, type OrbitCluster } from "./orbits";
 
 interface Model {
   demo: boolean;
@@ -27,6 +29,7 @@ interface Model {
   connected: boolean;
   config: OverseerPublicConfig | null;
   grokAgents: GrokPublic[];
+  orbits: OrbitCluster[];
 }
 
 interface Form {
@@ -115,21 +118,21 @@ export function OverseerView({ web = false }: { web?: boolean }) {
       if (!res.ok) throw new Error("The galaxy could not be read.");
       const payload: unknown = await res.json();
       if (!isGalaxyPayload(payload)) throw new Error("The galaxy could not be read.");
-      setModel({ demo: payload.demo, fronts: payload.fronts, sources: payload.sources, grokAgents: payload.grokAgents, connected: true, config: null });
+      setModel({ demo: payload.demo, fronts: payload.fronts, sources: payload.sources, grokAgents: payload.grokAgents, orbits: payload.orbits ?? [], connected: true, config: null });
       return;
     }
     if (!inTauri()) {
-      setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [] });
+      setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [], orbits: [] });
       return;
     }
     const config = await api.overseerConfig();
     setForm((f) => ({ ...f, ...formFrom(config), cursorKey: "", githubToken: "", hermesKey: "" }));
     if (config.demo) {
-      setModel({ ...demoSnapshot(), connected: true, config, grokAgents: [] });
+      setModel({ ...demoSnapshot(), connected: true, config, grokAgents: [], orbits: [] });
       return;
     }
     const raw = await api.overseerRefresh();
-    setModel({ ...assemble(raw), demo: false, connected: true, config, grokAgents: [] });
+    setModel({ ...assemble(raw), demo: false, connected: true, config, grokAgents: [], orbits: [] });
   };
 
   useEffect(() => {
@@ -146,12 +149,13 @@ export function OverseerView({ web = false }: { web?: boolean }) {
             connected: false,
             config: null,
             grokAgents: [],
+            orbits: [],
             sources: [fail("cursor", "Cursor cloud agents"), fail("github", "GitHub"), fail("hermes", "Hermes"), fail("grok", "Grok bots")],
           });
           return;
         }
         if (!inTauri()) {
-          setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [] });
+          setModel({ ...demoSnapshot(), connected: false, config: null, grokAgents: [], orbits: [] });
           return;
         }
         const fail = (key: SourceKey, label: string): SourceReport => ({ key, label, mode: "error", detail: message });
@@ -161,6 +165,7 @@ export function OverseerView({ web = false }: { web?: boolean }) {
           connected: true,
           config: null,
           grokAgents: [],
+          orbits: [],
           sources: [fail("cursor", "Cursor cloud agents"), fail("github", "GitHub"), fail("hermes", "Hermes"), fail("grok", "Grok bots")],
         });
       });
@@ -177,15 +182,18 @@ export function OverseerView({ web = false }: { web?: boolean }) {
   }, [web]);
 
   const fronts = model?.fronts ?? [];
+  const orbits = model?.orbits ?? [];
   const waiting = needsYou(fronts);
-  const selected = fronts.find((f) => f.id === selectedId) ?? null;
+  const picked = findStar(orbits, selectedId ?? "");
+  const listed = fronts.find((f) => f.id === selectedId) ?? null;
+  const selected = picked ? (listed ? { ...listed, project: picked.project } : starFront(picked.star, picked.project)) : listed;
   const lastRole = selected ? model?.grokAgents.find((agent) => selected.id === `grok:${agent.id}`)?.lastRole ?? null : null;
   const grokDown = !!model?.sources.some((source) => source.key === "grok" && source.detail === GROK_UNAVAILABLE);
 
   const save = async () => {
     setNote(null);
     if (!inTauri()) {
-      setModel(form.demo ? { ...demoSnapshot(), connected: false, config: null, grokAgents: [] } : { ...disconnectedSnapshot(), connected: false, config: null, grokAgents: [] });
+      setModel(form.demo ? { ...demoSnapshot(), connected: false, config: null, grokAgents: [], orbits: [] } : { ...disconnectedSnapshot(), connected: false, config: null, grokAgents: [], orbits: [] });
       setNote("This preview does not store tokens or call the network.");
       setSourcesOpen(false);
       return;
@@ -200,7 +208,7 @@ export function OverseerView({ web = false }: { web?: boolean }) {
     <div className="absolute inset-0 flex bg-void">
       <Inbox fronts={fronts} waiting={waiting} selectedId={selectedId} now={now} onSelect={setSelectedId} web={web} sources={model?.sources ?? []} />
       <div className="relative min-w-0 flex-1">
-        <Sky fronts={fronts} selectedId={selectedId} onSelect={setSelectedId} web={web} />
+        {web ? <OrbitCanvas clusters={orbits} selectedId={selectedId} onSelect={setSelectedId} /> : <Sky fronts={fronts} selectedId={selectedId} onSelect={setSelectedId} />}
         <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
           {model?.demo && <span className="rounded-full border border-line px-2 py-1 text-[11px] text-ink-3">Demo data</span>}
           {!web && <button className="btn" onClick={() => void refresh().catch(() => setNote("Could not refresh."))}>Refresh</button>}
@@ -216,7 +224,7 @@ export function OverseerView({ web = false }: { web?: boolean }) {
           <div className="absolute top-3 left-4 z-10 rounded-full border border-line bg-ground/90 px-3 py-1 text-[12px] text-ink-2" data-galaxy="grok-unavailable">{GROK_UNAVAILABLE}</div>
         )}
       </div>
-      {selected && <Detail front={selected} demo={!!model?.demo} web={web} lastRole={lastRole} onClose={() => setSelectedId(null)} />}
+      {selected && <Detail front={selected} demo={!!model?.demo} web={web} lastRole={lastRole} mention={!!picked?.star.guess} onClose={() => setSelectedId(null)} />}
       {!web && sourcesOpen && (
         <Sources
           form={form}
@@ -360,7 +368,7 @@ function Sky({ fronts, selectedId, onSelect, web = false }: { fronts: Front[]; s
   );
 }
 
-function Detail({ front, demo, onClose, web = false, lastRole = null }: { front: Front; demo: boolean; onClose: () => void; web?: boolean; lastRole?: "user" | "assistant" | null }) {
+function Detail({ front, demo, onClose, web = false, lastRole = null, mention = false }: { front: Front; demo: boolean; onClose: () => void; web?: boolean; lastRole?: "user" | "assistant" | null; mention?: boolean }) {
   const guess = web && front.source === "grok";
   return (
     <aside className="flex w-[320px] shrink-0 flex-col border-l border-line bg-panel" data-overseer="detail">
@@ -383,6 +391,7 @@ function Detail({ front, demo, onClose, web = false, lastRole = null }: { front:
           Guess{lastRole ? ` · last message from ${lastRole === "user" ? "you" : "the bot"}` : ""}. The index has no turn or approval data.
         </p>
       )}
+      {mention && <p className="mt-2 px-4 text-[12px] text-ink-3">{MENTION_TIP}.</p>}
       <div className="mt-4 px-4 text-[11.5px] text-ink-4">{relativeTime(front.updatedAt)} · {front.source}</div>
       {demo && <p className="mt-3 px-4 text-[12px] text-ink-3">Sample front. The link is invented and opens nowhere real.</p>}
       <div className="mt-auto border-t border-line p-4">
@@ -484,7 +493,7 @@ async function jump(front: Front) {
 function isGalaxyPayload(value: unknown): value is GalaxyPayload {
   if (!value || typeof value !== "object") return false;
   const row = value as GalaxyPayload;
-  return typeof row.demo === "boolean" && Array.isArray(row.fronts) && Array.isArray(row.sources) && Array.isArray(row.grokAgents);
+  return typeof row.demo === "boolean" && Array.isArray(row.fronts) && Array.isArray(row.sources) && Array.isArray(row.grokAgents) && Array.isArray(row.orbits);
 }
 
 function formFrom(config: OverseerPublicConfig): Pick<Form, "demo" | "cursorOn" | "githubOn" | "hermesOn" | "grokOn" | "hermesDashboard" | "hermesApi" | "grokFeed"> {

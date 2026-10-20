@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GROK_UNAVAILABLE } from "../src/features/overseer/grokIndex.ts";
 import { livePayload, type GalaxyPayload } from "../src/features/overseer/galaxyPayload.ts";
 import type { OverseerRefresh } from "../src/features/overseer/adapters.ts";
-import { startGalaxy } from "./galaxy.ts";
+import { envFromProcess, startGalaxy } from "./galaxy.ts";
 import { openReadOnly, pathAllowed, readGrok, readOnlyUri } from "./grokRead.ts";
 import { httpAllowed } from "./remote.ts";
 
@@ -122,6 +122,7 @@ describe("synthetic grok index", () => {
     expect(byId["room-1"]).toBeUndefined();
     expect(byId["ghost"]).toBeUndefined();
     expect(JSON.stringify(read.agents)).not.toContain(SENTINEL);
+    expect(JSON.stringify(read.mentions)).not.toContain(SENTINEL);
   });
 
   it("says the source is unavailable when the schema does not match", () => {
@@ -156,15 +157,46 @@ describe("synthetic grok index", () => {
 describe("GET /api/galaxy", () => {
   it("does not include message bodies", async () => {
     const { indexPath, agentsPath } = fixture();
+    const db = new DatabaseSync(indexPath);
+    const insert = db.prepare("INSERT INTO messages (agent_id, entry_id, role, timestamp_ms, body, seq) VALUES (?, ?, ?, ?, ?, ?)");
+    insert.run("bot-active", "m1", "user", NOW - 10 * MIN, `See https://github.com/hoku-demo/site/pull/4 ${SENTINEL}`, 4);
+    insert.run("bot-active", "m2", "assistant", NOW - 9 * MIN, "https://cursor.com/agents/bc-11111111-2222-4333-8444-555555555555 and https://github.com/hoku-demo/site/issues/9", 5);
+    insert.run("room-1", "g2", "assistant", NOW - MIN, "https://github.com/hoku-demo/secret/pull/1 bc-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", 2);
+    db.close();
+    const raw = blank();
+    raw.cursorError = null;
+    raw.cursorItems = [
+      {
+        id: "bc-11111111-2222-4333-8444-555555555555",
+        name: "Site work",
+        status: "IDLE",
+        runStatus: "FINISHED",
+        repository: "hoku-demo/site",
+        prUrl: "https://github.com/hoku-demo/site/pull/4",
+        githubPr: "open",
+        updatedAt: new Date(NOW).toISOString(),
+        url: "https://cursor.com/agents/bc-11111111-2222-4333-8444-555555555555",
+      },
+      {
+        id: "bc-99999999-8888-4777-8666-555555555555",
+        name: "HIDDEN_CLOSED",
+        status: "IDLE",
+        runStatus: "FINISHED",
+        repository: "hoku-demo/site",
+        prUrl: "https://github.com/hoku-demo/site/pull/2",
+        githubPr: "closed",
+        updatedAt: new Date(NOW).toISOString(),
+      },
+    ];
     const server = await startGalaxy({
       host: "127.0.0.1",
       port: 0,
       staticDir: null,
       snapshot: async () => {
         const grok = readGrok(indexPath, agentsPath, NOW, 15);
-        return livePayload(blank(), grok.available
-          ? { available: true, agents: grok.agents, activeMinutes: 15 }
-          : { available: false });
+        return livePayload(raw, grok.available
+          ? { available: true, agents: grok.agents, mentions: grok.mentions, activeMinutes: 15 }
+          : { available: false }, { prKnown: true, now: NOW });
       },
     });
     try {
@@ -174,7 +206,18 @@ describe("GET /api/galaxy", () => {
       expect(text).not.toContain(SENTINEL);
       expect(text).not.toContain('"body"');
       expect(text).not.toContain('"prompt"');
+      expect(text).toContain("bc-11111111-2222-4333-8444-555555555555");
+      expect(text).toContain("hoku-demo/site");
+      expect(text).not.toContain("bc-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+      expect(text).not.toContain("hoku-demo/secret");
+      expect(text).not.toContain("HIDDEN_CLOSED");
       const json = JSON.parse(text) as GalaxyPayload;
+      const site = json.orbits.find((cluster) => cluster.slug === "hoku-demo/site");
+      expect(site?.hidden).toBe(1);
+      const bot = site?.bots.find((star) => star.id === "grok:bot-active");
+      expect(bot?.mentions).toBeGreaterThanOrEqual(2);
+      expect(bot?.lastMentioned).toBe(new Date(NOW - 9 * MIN).toISOString());
+      expect(bot?.guess).toBe(true);
       const waiting = json.grokAgents.find((agent) => agent.id === "bot-wait");
       expect(waiting).toEqual({
         id: "bot-wait",
@@ -193,5 +236,13 @@ describe("GET /api/galaxy", () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe("galaxy env", () => {
+  it("reads the recent-window override and falls back to 3 days", () => {
+    expect(envFromProcess({ HOKU_GALAXY_RECENT_DAYS: "9" }).recentDays).toBe(9);
+    expect(envFromProcess({}).recentDays).toBe(3);
+    expect(envFromProcess({ HOKU_GALAXY_RECENT_DAYS: "nope" }).recentDays).toBe(3);
   });
 });

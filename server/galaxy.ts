@@ -3,6 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { OverseerRefresh } from "../src/features/overseer/adapters.ts";
+import { parseRecentDays } from "../src/features/overseer/orbits.ts";
 import { galaxyJson, livePayload, webDemo, type GalaxyPayload } from "../src/features/overseer/galaxyPayload.ts";
 import { readGrok } from "./grokRead.ts";
 import { fetchRemote, type RemoteEnv } from "./remote.ts";
@@ -104,6 +105,7 @@ export interface LiveEnv extends RemoteEnv {
   grokIndex: string;
   grokAgents: string;
   activeMinutes: number;
+  recentDays: number;
 }
 
 export function liveSnapshot(env: LiveEnv): () => Promise<GalaxyPayload> {
@@ -116,8 +118,8 @@ export function liveSnapshot(env: LiveEnv): () => Promise<GalaxyPayload> {
     return pending.then((raw) => {
       const grok = readGrok(env.grokIndex, env.grokAgents, Date.now(), env.activeMinutes);
       return livePayload(raw, grok.available
-        ? { available: true, agents: grok.agents, activeMinutes: env.activeMinutes }
-        : { available: false });
+        ? { available: true, agents: grok.agents, mentions: grok.mentions, activeMinutes: env.activeMinutes }
+        : { available: false }, { prKnown: !!env.githubToken, recentDays: env.recentDays });
     });
   };
 }
@@ -135,6 +137,7 @@ export function envFromProcess(source: NodeJS.ProcessEnv = process.env): LiveEnv
     grokIndex: source.HOKU_GROK_INDEX?.trim() || "/home/box/agent-data/search-index.db",
     grokAgents: source.HOKU_GROK_AGENTS?.trim() || "/home/box/agent-data/agents",
     activeMinutes: Number.isInteger(minutes) && minutes >= 1 && minutes <= 24 * 60 ? minutes : 15,
+    recentDays: parseRecentDays(source.HOKU_GALAXY_RECENT_DAYS),
   };
 }
 
