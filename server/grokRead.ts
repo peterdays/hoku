@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { deriveGrokStates, messagesSchemaOk, type GrokAgentState, type GrokColumn, type GrokMessage } from "../src/features/overseer/grokIndex.ts";
+import { extractMentions, type BotMentions } from "../src/features/overseer/orbits.ts";
 
 const BLOCKED = new Set(["box-secrets.json", "host-secrets.json", "gateway.json", "chrome-cookie-seed.json"]);
 
@@ -39,7 +40,7 @@ export function openReadOnly(filePath: string): DatabaseSync {
   return db;
 }
 
-export function readGrok(indexPath: string, agentsPath: string, nowMs: number, activeMinutes: number): { available: true; agents: GrokAgentState[] } | { available: false } {
+export function readGrok(indexPath: string, agentsPath: string, nowMs: number, activeMinutes: number): { available: true; agents: GrokAgentState[]; mentions: BotMentions[] } | { available: false } {
   if (!pathAllowed(indexPath) || !pathAllowed(agentsPath)) return { available: false };
   let db: DatabaseSync | null = null;
   try {
@@ -50,15 +51,7 @@ export function readGrok(indexPath: string, agentsPath: string, nowMs: number, a
     const columns = db.prepare("PRAGMA table_info(messages)").all().map(columnOf);
     const sql = master && typeof master.sql === "string" ? master.sql : null;
     if (!messagesSchemaOk(sql, columns)) return { available: false };
-    const rows = db.prepare(`
-      SELECT agent_id, role, timestamp_ms, body, seq
-      FROM (
-        SELECT agent_id, role, timestamp_ms, body, seq,
-               ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY timestamp_ms DESC, seq DESC, id DESC) AS rn
-        FROM messages
-      )
-      WHERE rn = 1
-    `).all();
+    const rows = db.prepare("SELECT agent_id, role, timestamp_ms, body, seq FROM messages").all();
     const messages: GrokMessage[] = [];
     for (const row of rows) {
       if (typeof row.agent_id !== "string" || typeof row.role !== "string" || typeof row.body !== "string") continue;
@@ -66,7 +59,12 @@ export function readGrok(indexPath: string, agentsPath: string, nowMs: number, a
       const seq = typeof row.seq === "number" ? row.seq : Number(row.seq);
       messages.push({ agentId: row.agent_id, role: row.role, timestampMs, body: row.body, seq });
     }
-    return { available: true, agents: deriveGrokStates(messages, names, nowMs, activeMinutes) };
+    const mentions = extractMentions(messages.filter((message) => names.has(message.agentId)).map((message) => ({
+      agentId: message.agentId,
+      timestampMs: message.timestampMs,
+      body: message.body,
+    })));
+    return { available: true, agents: deriveGrokStates(messages, names, nowMs, activeMinutes), mentions };
   } catch {
     return { available: false };
   } finally {

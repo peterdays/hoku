@@ -94,6 +94,8 @@ describe("galaxyJson", () => {
     const sentinel = "BODY_SENTINEL_gallery_json";
     (payload.grokAgents[0] as unknown as { body: string }).body = sentinel;
     (payload.fronts[0] as unknown as { body: string }).body = sentinel;
+    const star = payload.orbits.flatMap((cluster) => [...cluster.bots, ...cluster.work]).find(Boolean);
+    if (star) (star as unknown as { body: string }).body = sentinel;
     const text = galaxyJson(payload);
     expect(text).not.toContain(sentinel);
     expect(text).not.toContain('"body"');

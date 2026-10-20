@@ -116,7 +116,7 @@ export function liveSnapshot(env: LiveEnv): () => Promise<GalaxyPayload> {
     return pending.then((raw) => {
       const grok = readGrok(env.grokIndex, env.grokAgents, Date.now(), env.activeMinutes);
       return livePayload(raw, grok.available
-        ? { available: true, agents: grok.agents, activeMinutes: env.activeMinutes }
+        ? { available: true, agents: grok.agents, mentions: grok.mentions, activeMinutes: env.activeMinutes }
         : { available: false });
     });
   };

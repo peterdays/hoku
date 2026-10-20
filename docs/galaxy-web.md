@@ -36,7 +36,7 @@ Tokens come from the environment only. They are not written into the page.
 | `HERMES_DASHBOARD` | `http://127.0.0.1:9119` | Loopback only |
 | `HERMES_API` | `http://127.0.0.1:8642` | Loopback only |
 
-The browser receives an agent id, a name, a last timestamp, a last role, and a derived state. It does not receive message bodies.
+The browser receives an agent id, a name, a last timestamp, a last role, and a derived state. From chat it also receives cloud-agent ids, repository slugs, mention counts, and mention times. It does not receive message bodies.
 
 ## Grok states are guesses
 
@@ -53,7 +53,28 @@ The database is opened read-only. On Node versions that accept SQLite URIs that 
 
 If the database, the profile folder, or the schema is missing or unexpected, the page says **Grok Bot data unavailable** and the other stars stay up.
 
-The door for a bot is `grokbot://app/v1/agent?id=<agentId>`. Clicking the star opens it. Cloud agents open on cursor.com, and pull requests open on GitHub.
+The door for a bot is `grokbot://app/v1/agent?id=<agentId>`. Clicking the star opens it. A repository opens on GitHub. A cloud agent opens at `https://cursor.com/agents/<id>`.
+
+## Projects, bots, and work
+
+The cores are GitHub repositories. That is the same project star as the rest of the map.
+
+Around a repository:
+
+- **Grok bots** that mentioned it. A mention counts when a message links `github.com/<owner>/<repo>/pull|issues|tree|blob/...`, or when the bot mentions a `bc-...` cloud agent (including a `cursor.com/agents/<id>` link) and that bot mentioned the agent more than any other bot. A tie goes to the latest mention. A bot can stand on several repositories, once each, with the same link. The placement is a guess: the label keeps `~`, and the tooltip says "linked by mentions in chat". A repository mentioned only once, with no agent attached, is left out. Coordinator bots name a lot of repositories; the second mention is the bar.
+- **Work**, on the outer ring. A single cloud agent is named by its pull-request title when Cursor or GitHub sent one, otherwise by the agent's title. A Cursor project is a coordinator agent: its thread agents are grouped under one star named by the coordinator's title. The count on that star opens the threads. The project is drawn when at least one thread has an open pull request.
+
+An agent is drawn only when it has an open pull request. Closed, merged, and missing pull requests are omitted, including from Needs you. There is no Unassigned cluster. An agent with an open pull request and no repository of its own is placed on the pull request's repository. A repository with no bots and no open work is omitted too.
+
+Pull-request state comes from GitHub when `GITHUB_TOKEN` or `GH_TOKEN` is set (`GET /repos/{owner}/{repo}/pulls/{n}`: `merged`, then `open` or `closed`). If there is no token, Hoku uses a status on the Cursor run or agent when one is present (`prStatus`, `prState`, `pullRequestState`, or `pr.status`). If neither source says, the star stays up and is marked `?`. Hoku does not invent open or closed.
+
+The agent's colour is the run, using the same palette as the rest of the map: running is working, finished is done, failed or error is blocked, expired or cancelled is idle. A finished run is Needs you only when that open pull request is already Needs you from GitHub (review requested, or changes requested). An open pull request that nobody asked you to review does not.
+
+Bots that sit on no visible repository stay in a small **Other bots** ring, so a bot that is waiting on you is still on the map and still in Needs you. GitHub and Hermes still feed Needs you. They are not drawn as their own clusters.
+
+The Cursor list is followed with `nextCursor` (`limit` 100, `includeArchived=false`) until it ends or **200** agents, whichever comes first, and at most 10 pages. The list, the agent records, and the pull-request states are cached for a minute. Rings show eight stars. A count shows the rest; click it to open the ring.
+
+![Repositories at the centre, bots and open work around them](images/galaxy-orbits.png)
 
 ## What it looks like
 
